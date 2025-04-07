@@ -1,47 +1,68 @@
 import socket
 import json
 import argparse
+import threading
 
 class Server:
     def __init__(self, port, ip):
-        ''' 
-            Set up the server and bind it to the given port and ip 
-            retrieved from the command line
-        '''
-        try: 
-            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.address = (str(ip), port)
-            self.server_socket.bind(self.address)
-            print('Server Initialized on port: ', port)
-        except Exception as e:
-            print(f'Error while initializing server: {e}')
+        self.ip = ip
+        self.port = port
 
-        self.users = {}
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.bind((self.ip, self.port))
+        self.server_socket.listen(5) # Can handle 5 clients at a time
+        print(f'[*] Server started on {self.ip}:{self.port}')
+        
+        self.knownClients = {} # Map of {username: (connection, address)}
+        self.clients_lock = threading.Lock()
 
     def start(self):
-        '''
-            Start the server and listen for incoming messages, handle each case of message
-            using the 'TYPE' feild of inbound messages. Delegates to the appropriate handler.
-
-            Sends response back to the client to confirm the action was successful.
-        '''
         try:
             while True:
-                data, address = self.server_socket.recvfrom(1024)
-                data = json.loads(data.decode())
-                if data['type'] == 'SIGN-IN':
-                    rsp = self.handleSIGNIN(data, address)
-                elif data['type'] == 'SIGN-OUT':
-                    rsp = self.handleSIGNOUT(data)
-                elif data['type'] == 'LIST':
-                    rsp = self.handleLIST(data)
-                elif data['type'] == 'ADDRESS_REQUEST':
-                    rsp = self.handleADDRESS_REQUEST(data)
-                if rsp is not None:
-                    self.server_socket.sendto(json.dumps(rsp).encode(), address)
+                conn, addr = self.server_socket.accept()
+                print(f'[*] Connection from {addr}')
+                client_thread = threading.Thread(target=self.handle_client, args=(conn, addr), daemon=True)
+                client_thread.start()
+        except KeyboardInterrupt:
+            print("Server shutting down.")
         except Exception as e:
-            print(f'Error while listening for client requests: {e}' )
+            print("Error:", e)
+        finally:
+            self.server_socket.close()
+    
 
+    def handle_client(self, conn, addr):
+        username = None
+        try:
+            while True:
+                data = conn.recv(1024) # Recieving in chunks of 1024 bytes
+                if not data:
+                    break # Client disconnected since there is no data
+                message = json.loads(data.decode('utf-8'))
+                msg_type = message.get('type')
+                if msg_type == 'SIGN-IN':
+                    username = message.get('username')
+                    rsp = self.handleSIGNIN(message, addr)
+                    with self.clients_lock:
+                        self.knownClients[username] = (conn, addr)
+                elif msg_type == 'SIGN-OUT':
+                    pass
+
+                if rsp is not None:
+                    conn.send(json.dumps(rsp).encode('utf-8'))
+
+        except json.JSONDecodeError:
+            print(f'[*] Invalid JSON format from {addr}')
+        except Exception as e:
+            print(f'[*] Error: {e}')
+        finally:
+            if username:
+                with self.clients_lock:
+                    if username in self.knownClients:
+                        del self.knownClients[username]
+            conn.close()
+            print(f'[*] Connection closed from {addr}')
+                
 
     def handleSIGNIN(self, data, address):
         '''
@@ -100,8 +121,7 @@ class Server:
         return packet
     
     def close(self):
-        # Close the socket
-        self.server_socket.close()
+        pass
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
