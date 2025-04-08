@@ -85,10 +85,8 @@ class Client:
                     self.connected = False
                     break
                 message = json.loads(data.decode('utf-8'))
-                print(f'[*] Received message: {message}')
 
                 msg_type = message.get('type')
-                print(f'[*] Message type: {msg_type}')
                 if msg_type == 'RESPONSE':
                     print(f'{message.get("message")}')
                 elif msg_type == 'ADDRESS':
@@ -144,7 +142,6 @@ class Client:
         }
         self.message_server(packet)
         self.running = False
-        #self.close()
         sys.exit(0)
 
     def login(self, username):
@@ -179,7 +176,6 @@ class Client:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as peer_socket:
                 peer_socket.connect(dest) # Open temporary socket to send the message
                 peer_socket.send(json.dumps(packet).encode('utf-8'))
-                print(f"Message sent to {dest_user} at {dest}")
         except Exception as e:
             print(f"Error sending message to {dest_user}. They may not be signed in: {e}")
     

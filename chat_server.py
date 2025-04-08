@@ -21,7 +21,6 @@ class Server:
         try:
             while True:
                 conn, addr = self.server_socket.accept()
-                print(f'[*] Connection from {addr}')
                 client_thread = threading.Thread(target=self.handle_client, args=(conn, addr), daemon=True)
                 client_thread.start()
         except KeyboardInterrupt:
@@ -52,7 +51,6 @@ class Server:
                     rsp = self.handleADDRESS_REQUEST(message)
                 if rsp is not None:
                     conn.send(json.dumps(rsp).encode('utf-8'))
-                    print(f' Sending {rsp} to {addr}')
 
         except json.JSONDecodeError:
             print(f'[*] Invalid JSON format from {addr}')
