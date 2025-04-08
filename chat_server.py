@@ -14,6 +14,7 @@ class Server:
         self.server_socket.listen(5) # Can handle 5 clients at a time
         print(f'[*] Server started on {self.ip}:{self.port}')
         
+        self.credentials = {"Ahrav": "test123", "Alex": "a4password", "Jack": "$orange43"} 
         self.knownClients = {} # Map of {username: (connection, address, receiver_port)}
         self.clients_lock = threading.Lock()
 
@@ -39,6 +40,7 @@ class Server:
                 if not data:
                     break # Client disconnected since there is no data
                 message = json.loads(data.decode('utf-8'))
+                print(f'[*] Received message from {addr}: {message}')
                 msg_type = message.get('type')
                 if msg_type == 'SIGN-IN':
                     username = message.get('username')
@@ -51,6 +53,7 @@ class Server:
                     rsp = self.handleADDRESS_REQUEST(message)
                 if rsp is not None:
                     conn.send(json.dumps(rsp).encode('utf-8'))
+                    print(f'[*] Sent response to {addr}: {rsp}')
 
         except json.JSONDecodeError:
             print(f'[*] Invalid JSON format from {addr}')
@@ -70,11 +73,20 @@ class Server:
             When a client signs in, save their username and address in the users dictionary.
             This will be useful when another clients request sthe destination of a user.
         '''
+
         with self.clients_lock:
-            self.knownClients[data['username']] = (conn, address, data['reciever_port'])
+            if self.credentials[data['username']] == data['password']:
+                self.knownClients[data['username']] = (conn, address, data['reciever_port'])
+                # Generate Shared key from password
+            else:
+                packet = {
+                    "type": "LOGIN_FAIL",
+                    "message": 'Invalid Credentials'
+                }
+                return packet
         print(f'[*] User Signed In: {data["username"]} at {address} recieves messages on port {data["reciever_port"]}')
         packet = {
-            "type": "RESPONSE",
+            "type": "LOGIN_SUCCESS",
             "message": f'{data["username"]} Successfully Signed In'
         }
         return packet
@@ -82,6 +94,7 @@ class Server:
     def handleSIGNOUT(self, data):
         '''
             Removes a client from the user dictionary to ensure consistency of the list command.
+            Maybe this should send a broadcast to all users indidicating that the user has signed out.
         '''
         del self.knownClients[data['username']]
         print(f'[*] User Signed Out: {data["username"]}')

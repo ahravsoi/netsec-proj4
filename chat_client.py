@@ -1,16 +1,16 @@
 import socket
-import argparse
 import json
 import signal
 import sys
 import threading
+import os
 
 class Client:
-    def __init__(self, username, ip, port):
+    def __init__(self, ip, port):
         self.server_address = (ip, port)
-        self.username = username
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connected = False
+        self.login_status = False
         self.known_peers = {}  # Map of {username: (ip, listner_port)}
         self.server_lock = threading.Lock()
 
@@ -26,8 +26,7 @@ class Client:
             self.server_socket.connect(self.server_address)
             self.connected = True
             print(f'[*] Connected to server at {self.server_address}')
-    
-            self.login(self.username) # Send login request upon connection
+
             threading.Thread(target=self.serverListener, daemon=True).start() # Starts a thread to receive messages from server
             signal.signal(signal.SIGINT, self.logout)  # Handle Ctrl+C to logout FIX THIS LINE
         except socket.error as e:
@@ -50,9 +49,16 @@ class Client:
             
             Supports keyboard interrupts to logout
         '''
-        threading.Thread(target=self.peerListener, daemon=True).start()  # Start listening for incoming messages from other clients
         self.connect_to_server()  # Connect to the server
-        while self.connected: # CLI loop
+        
+        self.username = input("Enter your username: ")
+        self.password = input("Enter your password: ")
+        self.login(self.username, self.password)  # Send login request upon connection
+        while not self.login_status:
+            pass  # Wait until the serverListener updates the login_status
+        threading.Thread(target=self.peerListener, daemon=True).start()  # Start listening for incoming messages from other clients
+        
+        while self.connected and self.login_status: # CLI loop
             try:
                 command = input("Please Enter command:\n")
                 command_parts = command.split(maxsplit=2)
@@ -64,7 +70,6 @@ class Client:
                     rsp = self.handleSEND(destination_username, message)
                 else:
                     print("Invalid command. Please try again.")
-                
                 if rsp is not None:
                     print(rsp)
             except KeyboardInterrupt:
@@ -91,9 +96,17 @@ class Client:
                     print(f'{message.get("message")}')
                 elif msg_type == 'ADDRESS':
                     self.known_peers[message.get('requested_user_username')] = (message.get('requested_user_ip'), message.get('requested_user_listener_port'))
+                elif msg_type == 'LOGIN_SUCCESS':
+                    self.login_status = True
+                    print(f'[+] Login successful. Welcome {self.username}!')
+                elif msg_type == 'LOGIN_FAIL':
+                    self.login_status = False
+                    print(f'[-] Login failed: {message.get("message")}\nPlease restart the application and try again.')
+                    self.running = False
+                    os._exit(0)
                 else :
-                    print(f'[*] Unknown message type: {msg_type}')
-                print("Please Enter Command:", end='\n', flush=True)
+                    print(f'[-] Unknown message type: {msg_type}')
+                #print("Please Enter Command:", end='\n', flush=True)
 
             except Exception as e:
                 print(f'[*] Error receiving message: {e}')
@@ -144,10 +157,11 @@ class Client:
         self.running = False
         sys.exit(0)
 
-    def login(self, username):
+    def login(self, username, password):
         packet = {
             "type": "SIGN-IN",
             "username": username,
+            "password": password,
             "reciever_port": self.client_listener_port
         }
         self.message_server(packet)
@@ -198,10 +212,15 @@ class Client:
             return self.known_peers[dest_user]
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-u', type=str, help='Username')
-    parser.add_argument('-sip', type=str, help='Server IP address', default='127.0.0.1')
-    parser.add_argument('-sp', type=int, help='Server port number')
-    args = parser.parse_args()
-    client = Client(args.u, args.sip, args.sp)
+    # Load server configuration from config.json
+    try:
+        with open('config.json', 'r') as config_file:
+            config = json.load(config_file)
+            sip = config.get('server_ip')
+            sp = config.get('server_port')
+    except FileNotFoundError:
+        print("[*] config.json not found. Using default values.")
+    except json.JSONDecodeError as e:
+        print(f"[*] Error parsing config.json: {e}. Using default values.")
+    client = Client(sip, sp)
     client.run()
