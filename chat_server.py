@@ -4,6 +4,7 @@ import argparse
 import threading
 from argon2.low_level import hash_secret_raw, Type
 import os
+import binascii
 
 ##TODO -  When someone logs out we should broadcast to all clients that they have logged out.
 class Server:
@@ -82,7 +83,7 @@ class Server:
                 self.knownClients[data['username']] = (conn, address, data['reciever_port'])
                 # Generate Shared key from password
                 self.keys[data['username']] = self.deriveSharedKey(data['password'], os.urandom(16), 32)
-                print(f'[DEBUG] Shared Key for {data["username"]}: {self.keys[data["username"]]}')
+                print(f'[DEBUG] Shared Key for {data["username"]}: {binascii.hexlify(self.keys[data["username"]])}')
             else:
                 packet = {
                     "type": "LOGIN_FAIL",
