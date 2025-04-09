@@ -2,7 +2,7 @@ import socket
 import json
 import argparse
 import threading
-from argon2.low_level import hash_secret_raw, Type
+import argon2
 import os
 import binascii
 
@@ -81,9 +81,8 @@ class Server:
         with self.clients_lock:
             if self.credentials[data['username']] == data['password']:
                 self.knownClients[data['username']] = (conn, address, data['reciever_port'])
-                # Generate Shared key from password
-                self.keys[data['username']] = self.deriveSharedKey(data['password'], os.urandom(16), 32)
-                print(f'[DEBUG] Shared Key for {data["username"]}: {binascii.hexlify(self.keys[data["username"]])}')
+                self.keys[data['username']] = self.deriveSharedKey(data['password'], os.urandom(16), 32) # Generate Shared key from password
+                #print(f'[DEBUG] Shared Key for {data["username"]}: {binascii.hexlify(self.keys[data["username"]])}')
             else:
                 packet = {
                     "type": "LOGIN_FAIL",
@@ -152,17 +151,33 @@ class Server:
             Derives a shared key from the password using Argon2 hashing algorithm.
             This is used to encrypt the messages between the clients.
 
+            https://cryptobook.nakov.com/mac-and-key-derivation/argon2
+            Look at these docs for how to do the verification on the client side.
+
         '''
-        password_bytes = password.encode('utf-8')
-        return hash_secret_raw(
-            secret=password_bytes,
-            salt=salt,
-            time_cost=2,        # Number of iterations
-            memory_cost=10240, # KB of RAM - this is 10MB 
-            parallelism=8,      # Number of threads, 
-            hash_len=keylen,    
-            type=Type.ID
+        tmp = password.encode('utf-8')
+        password_hash = argon2.hash_password_raw(
+            time_cost=4,       # 4 iterations
+            memory_cost=10240, # 10 MB
+            parallelism=2,     # 2 threads
+            hash_len=32,
+            password=tmp, 
+            salt=salt, 
+            type=argon2.low_level.Type.ID
         )
+        print("[DEBUG] Argon2 raw hash:", binascii.hexlify(password_hash))
+
+        # This part is used for password storing and verification
+        # it holds algo parameters salt and derived key
+        argon2Hasher = argon2.PasswordHasher(
+            time_cost=4,
+            memory_cost=10240,
+            parallelism=2,
+            hash_len=32,
+            salt_len=16
+        )
+        password_hash = argon2Hasher.hash(password)
+        print("[DEBUG] Argon2 hash (random salt):", password_hash)
 
     
 if __name__ == '__main__':
