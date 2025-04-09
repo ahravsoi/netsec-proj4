@@ -31,6 +31,7 @@ class Client:
             signal.signal(signal.SIGINT, self.logout)  # Handle Ctrl+C to logout FIX THIS LINE
         except socket.error as e:
             print(f'[*] Connection error: {e}')
+            os._exit(1)
     
     def message_server(self, packet):
         try:
