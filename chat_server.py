@@ -2,6 +2,8 @@ import socket
 import json
 import argparse
 import threading
+from argon2.low_level import hash_secret_raw, Type
+import os
 
 ##TODO -  When someone logs out we should broadcast to all clients that they have logged out.
 class Server:
@@ -14,7 +16,8 @@ class Server:
         self.server_socket.listen(5) # Can handle 5 clients at a time
         print(f'[*] Server started on {self.ip}:{self.port}')
         
-        self.credentials = {"Ahrav": "test123", "Alex": "a4password", "Jack": "$orange43"} 
+        self.credentials = {"Ahrav": "test123", "Alex": "a4password", "Jack": "$orange43"}
+        self.keys = {} # Map of {username: shared_key}
         self.knownClients = {} # Map of {username: (connection, address, receiver_port)}
         self.clients_lock = threading.Lock()
 
@@ -78,6 +81,8 @@ class Server:
             if self.credentials[data['username']] == data['password']:
                 self.knownClients[data['username']] = (conn, address, data['reciever_port'])
                 # Generate Shared key from password
+                self.keys[data['username']] = self.deriveSharedKey(data['password'], os.urandom(16), 32)
+                print(f'[DEBUG] Shared Key for {data["username"]}: {self.keys[data["username"]]}')
             else:
                 packet = {
                     "type": "LOGIN_FAIL",
@@ -141,6 +146,24 @@ class Server:
                 }
                 return packet
 
+    def deriveSharedKey(self, password, salt, keylen):
+        '''
+            Derives a shared key from the password using Argon2 hashing algorithm.
+            This is used to encrypt the messages between the clients.
+
+        '''
+        password_bytes = password.encode('utf-8')
+        return hash_secret_raw(
+            secret=password_bytes,
+            salt=salt,
+            time_cost=2,        # Number of iterations
+            memory_cost=10240, # KB of RAM - this is 10MB 
+            parallelism=8,      # Number of threads, 
+            hash_len=keylen,    
+            type=Type.ID
+        )
+
+    
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-sp', type=int, help='Port number to listen on') # Use Port 50005
