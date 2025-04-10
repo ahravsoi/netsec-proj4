@@ -63,6 +63,9 @@ class Client:
         '''
             Used only when sending messages to the peer
         '''
+        while dest_user not in self.known_peers: # Wait for the local peers table to get updated
+            #print(f'Known Peers: {self.known_peers}')
+            pass
         peer_ip, peer_port = self.known_peers.get(dest_user)
         print(f'[DEBUG] Peer IP: {peer_ip}, Peer Port: {peer_port}')
         if peer_ip and peer_port:
@@ -70,8 +73,8 @@ class Client:
                 peer_socket.connect((peer_ip, peer_port))
                 sent = peer_socket.send(json.dumps(packet).encode('utf-8')) # Send a response back to the peer
                 print(f'[+] Sent response to {peer_ip}:{peer_port}: {packet}. Bytes sent: {sent}')
-        else:
-            print(f'[-] Peer {dest_user} not found in known peers.')
+        # else:
+        #     print(f'[-] Peer {dest_user} not found in known peers.')
 
     def run(self):
         '''
@@ -131,6 +134,7 @@ class Client:
                     print(f'{message.get("message")}')
                 elif msg_type == 'ADDRESS':
                     self.known_peers[message.get('requested_user_username')] = (message.get('requested_user_ip'), message.get('requested_user_listener_port'))
+                    print(f'[DEBUG] Updating known_peers: {self.known_peers}')
                 elif msg_type == 'LOGIN_SUCCESS':
                     self.login_status = True
                     print(f'[+] Login successful. Welcome {self.username}!')
@@ -183,24 +187,20 @@ class Client:
             print(f'Data Type: {data.get("type")}')
             if data.get('type') == 'MESSAGE':
                 print(f'<From {data.get("source_ip")}:{data.get("source_port")}:{data.get("source_user")}> {data.get("message")} ')
-                print('Here2')
             elif data.get('type') == 'KEY_EXCHANGE':
-                rsp = self.handleKeyExchange(data)
-                print('Here3')
+                rsp = self.handleKeyExchange(data, conn)
             elif data.get('type') == 'KEY_EXCHANGE_RESPONSE':
+                print(f'Here3')
                 session_key = self.generateSharedSessionKey(self.ephemeral_keys[data.get("source_user")], data.get("public_key").encode('utf-8'))
                 print('Here4')
             else:
                 print(f'[*] Unknown message type: {data.get("type")}')
 
             print('Here5')
-            #if rsp is not None:
-            print(f' Source User: {data.get("source_user")}')
-            print(f' Response to send back: {rsp}')
-            self.message_peer(data.get("source_user"), rsp)  # Send a response back to the peer
-            print('Here6')
-            print('Here7')
-                
+            if rsp:
+                self.message_peer(data.get("source_user"), rsp)  # Send a response back to the peer
+            else:
+                print(f'[*] No response to send back to peer {data.get("source_user")}')
         except Exception as e:
             print(f'[*] Error receiving message from peer: {e}')
         finally:
@@ -238,6 +238,7 @@ class Client:
             Creates a temporary socket with the destination user and sends the message.
         '''
         dest = self.get_destAddress(dest_user) # or request the address from the server
+        print(f'Destination: {dest}')
 
         if dest_user not in self.shared_keys:
             private_key, public_key = self.generateKeyPair()
@@ -249,7 +250,9 @@ class Client:
             packet = { # Send our public key to the destination user
                 "type": "KEY_EXCHANGE",
                 "source_user": self.username,
-                "public_key": public_key_bytes.decode('utf-8')
+                "public_key": public_key_bytes.decode('utf-8'),
+                "source_ip": self.server_socket.getsockname()[0],  # Get the local IP address
+                "source_port": self.client_listener_port  # Include the listening port
             }
         else:
             # We already know the destination user, so we can send the message directly
@@ -269,10 +272,13 @@ class Client:
 
         
     
-    def handleKeyExchange(self, data):
+    def handleKeyExchange(self, data, conn):
         '''
             For now we just want to respond to the key exchange request by sending back our public key.
+            Add the sender to known peers
         '''
+        # Add the source user to known peers
+        self.known_peers[data["source_user"]] = (data["source_ip"], data["source_port"])
         private_key, public_key = self.generateKeyPair()
         public_key_bytes = public_key.public_bytes(
             encoding=serialization.Encoding.PEM,
@@ -302,6 +308,7 @@ class Client:
                 "requested_user": dest_user
             }
             self.message_server(packet)
+            print(f'Getting address: {packet}')
             while dest_user not in self.known_peers: # Wait for the local peers table to get updated
                 pass
             return self.known_peers[dest_user]
@@ -319,8 +326,10 @@ class Client:
         '''''
             Generate a shared secret key using ECDH
         '''
+        print(f'[DEBUG] Generating Shared Session Key for {peer_username}')
         peer_pub_key = serialization.load_pem_public_key(peer_public_key_bytes, backend=default_backend())
         shared_key = private_key.exchange(ec.ECDH(), peer_pub_key)
+        print(f'HERE43')
 
         # Derive a symmetric key from the shared secret using HKDF
         session_key = HKDF(
