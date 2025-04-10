@@ -80,7 +80,7 @@ class Client:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as peer_socket:
                 peer_socket.connect((peer_ip, peer_port))
                 sent = peer_socket.send(json.dumps(packet).encode('utf-8')) # Send a response back to the peer
-                print(f'[+] Sent response to {peer_ip}:{peer_port}: {packet}. Bytes sent: {sent}')
+                #print(f'[+] Sent response to {peer_ip}:{peer_port}: {packet}. Bytes sent: {sent}')
         # else:
         #     print(f'[-] Peer {dest_user} not found in known peers.')
 
@@ -140,7 +140,7 @@ class Client:
                 msg_type = message.get('type')
                 if msg_type == 'RESPONSE':
                     print(f'{message.get("message")}')
-                    print(f'{self.username}@{self.current_ip}: Enter Command>>\n', flush=True)
+                    print(f'{self.username}@{self.current_ip}: Enter Command>>', flush=True)
                 elif msg_type == 'ADDRESS':
                     self.known_peers[message.get('requested_user_username')] = (message.get('requested_user_ip'), message.get('requested_user_listener_port'))
                 elif msg_type == 'LOGIN_SUCCESS':
@@ -198,10 +198,15 @@ class Client:
                 print(f'{self.username}@{self.current_ip}: Enter Command>>\n', flush=True)
             elif data.get('type') == 'KEY_EXCHANGE':
                 rsp = self.handleKeyExchange(data, conn)
+                # At this point we need to generate the session key too because we have the public key of the peer and then generating our own in
+                # the method above
                 self.message_peer(data.get("source_user"), rsp)
             elif data.get('type') == 'KEY_EXCHANGE_RESPONSE':
                 session_key = self.generateSharedSessionKey(self.priv, data.get("public_key").encode('utf-8'), data.get("source_user"))
                 self.shared_keys[data.get("source_user")] = session_key # Store the session key to decrypt messages from this client
+                print(f'[+] Shared key established with {data.get("source_user")}: {binascii.hexlify(session_key)}')
+                # Send the actual message now which is tricky because the logic is in the else clause of the send method
+
 
             else:
                 print(f'[*] Unknown message type: {data.get("type")}')
@@ -261,7 +266,8 @@ class Client:
                 "source_port": self.client_listener_port  # Include the listening port
             }
         else:
-            # We already know the destination user, so we can send the message directly while encrypting the msg
+        
+            # Now that shared key is derived, we can encrypt the message
             nonce, ciphertext_msg = self.encrypt_message(self.shared_keys[dest_user], msg)
 
             packet = {
