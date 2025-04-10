@@ -17,7 +17,7 @@ class Server:
         self.server_socket.listen(5) # Can handle 5 clients at a time
         print(f'[*] Server started on {self.ip}:{self.port}')
         
-        self.credentials = {"Ahrav": "test123", "Alex": "a4password", "Jack": "$orange43"}
+        self.credentials = {"Ahrav": "ab", "Alex": "abc", "Jack": "$orange43"}
         self.keys = {} # Map of {username: shared_key}
         self.knownClients = {} # Map of {username: (connection, address, receiver_port)}
         self.clients_lock = threading.Lock()
@@ -44,7 +44,7 @@ class Server:
                 if not data:
                     break # Client disconnected since there is no data
                 message = json.loads(data.decode('utf-8'))
-                print(f'[*] Received message from {addr}: {message}')
+                #print(f'[*] Received message from {addr}: {message}')
                 msg_type = message.get('type')
                 if msg_type == 'SIGN-IN':
                     username = message.get('username')

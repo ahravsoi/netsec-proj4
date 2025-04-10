@@ -4,6 +4,7 @@ import signal
 import sys
 import threading
 import os
+import binascii
 
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -57,6 +58,20 @@ class Client:
                 self.server_socket.send(json.dumps(packet).encode('utf-8'))
         except Exception as e:
             print(f'[*] Error sending message to server: {e}')
+
+    def message_peer(self, dest_user, packet):
+        '''
+            Used only when sending messages to the peer
+        '''
+        peer_ip, peer_port = self.known_peers.get(dest_user)
+        print(f'[DEBUG] Peer IP: {peer_ip}, Peer Port: {peer_port}')
+        if peer_ip and peer_port:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as peer_socket:
+                peer_socket.connect((peer_ip, peer_port))
+                sent = peer_socket.send(json.dumps(packet).encode('utf-8')) # Send a response back to the peer
+                print(f'[+] Sent response to {peer_ip}:{peer_port}: {packet}. Bytes sent: {sent}')
+        else:
+            print(f'[-] Peer {dest_user} not found in known peers.')
 
     def run(self):
         '''
@@ -150,16 +165,21 @@ class Client:
         '''
             Handle a single connection for a inbound client, this will run in a seperate thread for each client. 
                 - Say we have 4 clients connected, there will be 4 threads running this method.
-            This is where we will receive messages from other clients.
+            This is where we will open a socket with the client so that we can recieve and communicate.
 
-            Only expect one type of message from the clients - MESSAGE
+            This will handle inbound messages:
+                - KEY_EXCHANGE
+                - MESSAGE
+                - KEY_EXCHANGE_RESPONSE
         '''
         try:
             data = conn.recv(1024)  # Receiving in chunks of 1024 bytes
+            print(f'[*] Received message from {addr}: {data}')
             if not data:
                 print("[*] Peer closed the connection.")
                 return
             data = json.loads(data.decode('utf-8'))
+            
             if data.get('type') == 'MESSAGE':
                 print(f'<From {data.get("source_ip")}:{data.get("source_port")}:{data.get("source_user")}> {data.get("message")} ')
             elif data.get('type') == 'KEY_EXCHANGE':
@@ -170,12 +190,13 @@ class Client:
                 print(f'[*] Unknown message type: {data.get("type")}')
 
             if rsp is not None:
-                conn.send(json.dumps(rsp).encode('utf-8')) # Send a response back to the peer
-
+                self.message_peer(data.get("source_user"), rsp)  # Send a response back to the peer
+                
         except Exception as e:
             print(f'[*] Error receiving message from peer: {e}')
         finally:
             conn.close()
+        
 
     def logout(self, signum=None, frame=None):
         packet = {
@@ -209,35 +230,35 @@ class Client:
         '''
         dest = self.get_destAddress(dest_user) # or request the address from the server
 
-        private_key, public_key = self.generateKeyPair()
-        public_key_bytes = public_key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo)
+        if dest_user not in self.shared_keys:
+            private_key, public_key = self.generateKeyPair()
+            public_key_bytes = public_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo)
+            #self.ephemeral_keys[dest_user] = public_key_bytes.decode('utf-8') this seems wrong
         
-        key_exchange = { # Send our public key to the destination user
-            "type": "KEY_EXCHANGE",
-            "source_user": self.username,
-            "public_key": public_key_bytes.decode('utf-8')
-        }
+            packet = { # Send our public key to the destination user
+                "type": "KEY_EXCHANGE",
+                "source_user": self.username,
+                "public_key": public_key_bytes.decode('utf-8')
+            }
+        else:
+            # We already know the destination user, so we can send the message directly
+            packet = {
+                "type": "MESSAGE",
+                "source_ip": 0, # Need to figure out how to get the local ip address
+                "source_port": 0, # Need to figure out how to get the local port
+                "source_user": self.username,
+                "to": dest_user,
+                "message": msg
+            }
 
-        message = {
-            "type": "MESSAGE",
-            "source_ip": 0, # Need to figure out how to get the local ip address
-            "source_port": 0, # Need to figure out how to get the local port
-            "source_user": self.username,
-            "to": dest_user,
-            "message": msg
-        }
-        
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as peer_socket: # Open temporary socket to send the message
-                peer_socket.connect(dest) 
-                if dest_user not in self.shared_keys: # we need to do ECDH key exchange to get our shared key                
-                    peer_socket.send(json.dumps(key_exchange).encode('utf-8')) # Send the public key to the destination user
-                else: # we already know them so send the message 
-                    peer_socket.send(json.dumps(message).encode('utf-8'))
+            self.message_peer(dest_user, packet)  # Send the message to the destination user
         except Exception as e:
             print(f"Error sending message to {dest_user}. They may not be signed in: {e}")
+
+        
     
     def handleKeyExchange(self, data):
         '''
@@ -281,10 +302,11 @@ class Client:
             Generate a public/private key pair using ECDSA
         '''
         priv = ec.generate_private_key(ec.SECP256R1(), default_backend())
-        pub = priv
+        print(f'[DEBUG] Generated Key Pair')
+        pub = priv.public_key()
         return priv, pub
     
-    def generateSharedSessionKey(private_key, peer_public_key_bytes):
+    def generateSharedSessionKey(self, private_key, peer_public_key_bytes, peer_username):
         '''''
             Generate a shared secret key using ECDH
         '''
@@ -299,6 +321,9 @@ class Client:
             info=b'handshake data',
             backend=default_backend()
         ).derive(shared_key)
+        print(f'[DEBUG] Generated Shared Session Key: {binascii.hexlify(session_key)}')
+
+        self.shared_keys[peer_username] = session_key  # Store the shared key for the peer
         return session_key
 
 if __name__ == '__main__':
