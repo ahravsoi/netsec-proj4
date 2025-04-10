@@ -284,11 +284,11 @@ class Client:
         pub = priv
         return priv, pub
     
-    def generateSharedSessionKey(private_key, public_key_bytes):
+    def generateSharedSessionKey(private_key, peer_public_key_bytes):
         '''''
             Generate a shared secret key using ECDH
         '''
-        peer_pub_key = serialization.load_pem_public_key(public_key_bytes, backend=default_backend())
+        peer_pub_key = serialization.load_pem_public_key(peer_public_key_bytes, backend=default_backend())
         shared_key = private_key.exchange(ec.ECDH(), peer_pub_key)
 
         # Derive a symmetric key from the shared secret using HKDF
