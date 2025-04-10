@@ -5,8 +5,17 @@ import sys
 import threading
 import os
 
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.backends import default_backend
+
 class Client:
     def __init__(self, ip, port):
+        '''
+            Initialize the client with the server address and create a socket that will later connect to the server
+            Also creates an lisenting socket that will be used to listen for incoming messages from other clients (seperate port number as well)
+        '''
         self.server_address = (ip, port)
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connected = False
@@ -19,9 +28,15 @@ class Client:
         self.client_listnener.bind((ip, 0))  # Bind to any available port
         self.client_listener_port = self.client_listnener.getsockname()[1] # Server should tell other clients to send messages to this port
         self.client_listnener.listen(5)  # Listen for incoming connections
-        
 
+        # Handle all the keys that this client learns
+        self.ephemeral_keys = {}  # {username: public_key}
+        self.shared_keys = {}     # {username: shared_key}
+        
     def connect_to_server(self):
+        '''
+            Connect to the server and start a thread to listen for incoming messages from the server
+        '''
         try:
             self.server_socket.connect(self.server_address)
             self.connected = True
@@ -34,6 +49,9 @@ class Client:
             os._exit(1)
     
     def message_server(self, packet):
+        '''
+            Used only when sending messages to the server
+        '''
         try:
             with self.server_lock:
                 self.server_socket.send(json.dumps(packet).encode('utf-8'))
@@ -44,6 +62,7 @@ class Client:
         '''
             Start peer listener
             Start the command line interface for the client to handle user inputted commands
+            Starts a thread to listen for incoming connections from other clients
             Commands:
                 - LIST: List all users
                 - SEND <username> <message>: Send a message to a user
@@ -81,7 +100,7 @@ class Client:
    
     def serverListener(self):
         '''
-            Continuously receive messages from the server
+            Continuously receive messages from the server. This is the method used in the thread in the connect_to_server method.
         '''
         while self.connected:
             try:
@@ -117,7 +136,7 @@ class Client:
     def peerListener(self):
         '''
             Continuously receive connections from other clients on our listener socket.
-            When a connection is received, spawn a new thread to handle the connection.
+            When a connection is received, spawn a new thread to handle the connection and then listen for messages
         '''
         while True:
             try:
@@ -129,7 +148,8 @@ class Client:
 
     def handle_peer_connection(self, conn, addr):
         '''
-            Handle incoming connections from other clients.
+            Handle a single connection for a inbound client, this will run in a seperate thread for each client. 
+                - Say we have 4 clients connected, there will be 4 threads running this method.
             This is where we will receive messages from other clients.
 
             Only expect one type of message from the clients - MESSAGE
@@ -139,11 +159,19 @@ class Client:
             if not data:
                 print("[*] Peer closed the connection.")
                 return
-            message = json.loads(data.decode('utf-8'))
-            if message.get('type') == 'MESSAGE':
-                print(f'<From {message.get("source_ip")}:{message.get("source_port")}:{message.get("source_user")}> {message.get("message")} ')
+            data = json.loads(data.decode('utf-8'))
+            if data.get('type') == 'MESSAGE':
+                print(f'<From {data.get("source_ip")}:{data.get("source_port")}:{data.get("source_user")}> {data.get("message")} ')
+            elif data.get('type') == 'KEY_EXCHANGE':
+                rsp = self.handleKeyExchange(data)
+            elif data.get('type') == 'KEY_EXCHANGE_RESPONSE':
+                rsp = self.generateSharedSessionKey(self.ephemeral_keys[data.get("source_user")], data.get("public_key").encode('utf-8'))
             else:
-                print(f'[*] Unknown message type: {message.get("type")}')
+                print(f'[*] Unknown message type: {data.get("type")}')
+
+            if rsp is not None:
+                conn.send(json.dumps(rsp).encode('utf-8')) # Send a response back to the peer
+
         except Exception as e:
             print(f'[*] Error receiving message from peer: {e}')
         finally:
@@ -177,8 +205,22 @@ class Client:
     def handleSEND(self, dest_user, msg):
         '''
             Sends message to dest user. 
+            Creates a temporary socket with the destination user and sends the message.
         '''
-        packet = {
+        dest = self.get_destAddress(dest_user) # or request the address from the server
+
+        private_key, public_key = self.generateKeyPair()
+        public_key_bytes = public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo)
+        
+        key_exchange = { # Send our public key to the destination user
+            "type": "KEY_EXCHANGE",
+            "source_user": self.username,
+            "public_key": public_key_bytes.decode('utf-8')
+        }
+
+        message = {
             "type": "MESSAGE",
             "source_ip": 0, # Need to figure out how to get the local ip address
             "source_port": 0, # Need to figure out how to get the local port
@@ -186,14 +228,36 @@ class Client:
             "to": dest_user,
             "message": msg
         }
-        dest = self.get_destAddress(dest_user) # or request the address from the server
+        
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as peer_socket:
-                peer_socket.connect(dest) # Open temporary socket to send the message
-                peer_socket.send(json.dumps(packet).encode('utf-8'))
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as peer_socket: # Open temporary socket to send the message
+                peer_socket.connect(dest) 
+                if dest_user not in self.shared_keys: # we need to do ECDH key exchange to get our shared key                
+                    peer_socket.send(json.dumps(key_exchange).encode('utf-8')) # Send the public key to the destination user
+                else: # we already know them so send the message 
+                    peer_socket.send(json.dumps(message).encode('utf-8'))
         except Exception as e:
             print(f"Error sending message to {dest_user}. They may not be signed in: {e}")
     
+    def handleKeyExchange(self, data):
+        '''
+            For now we just want to respond to the key exchange request by sending back our public key.
+        '''
+        private_key, public_key = self.generateKeyPair()
+        public_key_bytes = public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo)
+
+        # Store the ephemeral key and shared key
+        self.ephemeral_keys[data["source_user"]] = data["public_key"]
+        packet = {
+            "type": "KEY_EXCHANGE_RESPONSE",
+            "source_user": self.username,
+            "public_key": public_key_bytes.decode('utf-8')
+        }
+
+        return packet
+
     def get_destAddress(self, dest_user):
         '''
             Get the address of the destination user. If the destination user is not in the known_peers cache,
@@ -211,6 +275,31 @@ class Client:
             while dest_user not in self.known_peers: # Wait for the local peers table to get updated
                 pass
             return self.known_peers[dest_user]
+
+    def generateKeyPair(self):
+        '''
+            Generate a public/private key pair using ECDSA
+        '''
+        priv = ec.generate_private_key(ec.SECP256R1(), default_backend())
+        pub = priv
+        return priv, pub
+    
+    def generateSharedSessionKey(private_key, public_key_bytes):
+        '''''
+            Generate a shared secret key using ECDH
+        '''
+        peer_pub_key = serialization.load_pem_public_key(public_key_bytes, backend=default_backend())
+        shared_key = private_key.exchange(ec.ECDH(), peer_pub_key)
+
+        # Derive a symmetric key from the shared secret using HKDF
+        session_key = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=None,
+            info=b'handshake data',
+            backend=default_backend()
+        ).derive(shared_key)
+        return session_key
 
 if __name__ == '__main__':
     # Load server configuration from config.json
