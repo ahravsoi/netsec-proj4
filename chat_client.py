@@ -10,6 +10,8 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 
 class Client:
     def __init__(self, ip, port):
@@ -24,6 +26,9 @@ class Client:
         self.known_peers = {}  # Map of {username: (ip, listner_port)}
         self.server_lock = threading.Lock()
 
+        # Get the current IP address of the client
+        self.current_ip = socket.gethostbyname(socket.gethostname())
+
         # Create a seperate socket that will listen to incoming messages from other clients
         self.client_listnener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.client_listnener.bind((ip, 0))  # Bind to any available port
@@ -33,6 +38,9 @@ class Client:
         # Handle all the keys that this client learns
         self.ephemeral_keys = {}  # {username: public_key}
         self.shared_keys = {}     # {username: shared_key}
+
+        # Our keys make sure to dump them
+        self.priv = ''
         
     def connect_to_server(self):
         '''
@@ -98,7 +106,7 @@ class Client:
         
         while self.connected and self.login_status: # CLI loop
             try:
-                command = input("Please Enter command:\n")
+                command = input(f'{self.username}@{self.current_ip}: Enter Command>>\n')
                 command_parts = command.split(maxsplit=2)
                 if command_parts[0].lower() == 'list':
                     rsp = self.handleLIST()
@@ -132,12 +140,13 @@ class Client:
                 msg_type = message.get('type')
                 if msg_type == 'RESPONSE':
                     print(f'{message.get("message")}')
+                    print(f'{self.username}@{self.current_ip}: Enter Command>>\n', flush=True)
                 elif msg_type == 'ADDRESS':
                     self.known_peers[message.get('requested_user_username')] = (message.get('requested_user_ip'), message.get('requested_user_listener_port'))
-                    print(f'[DEBUG] Updating known_peers: {self.known_peers}')
                 elif msg_type == 'LOGIN_SUCCESS':
                     self.login_status = True
                     print(f'[+] Login successful. Welcome {self.username}!')
+                    # print(f'{self.username}@{self.current_ip}: Enter Command>>\n', flush=True)
                 elif msg_type == 'LOGIN_FAIL':
                     self.login_status = False
                     print(f'[-] Login failed: {message.get("message")}\nPlease restart the application and try again.')
@@ -145,7 +154,7 @@ class Client:
                     os._exit(0)
                 else :
                     print(f'[-] Unknown message type: {msg_type}')
-                #print("Please Enter Command:", end='\n', flush=True)
+                    # print(f'{self.username}@{self.current_ip}: Enter Command>>\n', flush=True)
 
             except Exception as e:
                 print(f'[*] Error receiving message: {e}')
@@ -178,35 +187,33 @@ class Client:
         '''
         try:
             data = conn.recv(1024)  # Receiving in chunks of 1024 bytes
-            print(f'[*] Received message from {addr}: {data}')
             if not data:
                 print("[*] Peer closed the connection.")
                 return
             data = json.loads(data.decode('utf-8'))
-            print('Here1')
-            print(f'Data Type: {data.get("type")}')
             if data.get('type') == 'MESSAGE':
-                print(f'<From {data.get("source_ip")}:{data.get("source_port")}:{data.get("source_user")}> {data.get("message")} ')
+                # Decrypt the message using the shared key
+                recieved_message = self.handleRecievedMessage(data)
+                print(f'<From {data.get("source_ip")}:{data.get("source_port")}:{data.get("source_user")}> {recieved_message}')
+                print(f'{self.username}@{self.current_ip}: Enter Command>>\n', flush=True)
             elif data.get('type') == 'KEY_EXCHANGE':
                 rsp = self.handleKeyExchange(data, conn)
+                self.message_peer(data.get("source_user"), rsp)
             elif data.get('type') == 'KEY_EXCHANGE_RESPONSE':
-                print(f'Here3')
-                session_key = self.generateSharedSessionKey(self.ephemeral_keys[data.get("source_user")], data.get("public_key").encode('utf-8'))
-                print('Here4')
+                session_key = self.generateSharedSessionKey(self.priv, data.get("public_key").encode('utf-8'), data.get("source_user"))
+                self.shared_keys[data.get("source_user")] = session_key # Store the session key to decrypt messages from this client
+
             else:
                 print(f'[*] Unknown message type: {data.get("type")}')
+                print(f'{self.username}@{self.current_ip}: Enter Command>>\n', flush=True)
+            
 
-            print('Here5')
-            if rsp:
-                self.message_peer(data.get("source_user"), rsp)  # Send a response back to the peer
-            else:
-                print(f'[*] No response to send back to peer {data.get("source_user")}')
+
         except Exception as e:
             print(f'[*] Error receiving message from peer: {e}')
         finally:
             conn.close()
         
-
     def logout(self, signum=None, frame=None):
         packet = {
             "type": "SIGN-OUT",
@@ -238,7 +245,6 @@ class Client:
             Creates a temporary socket with the destination user and sends the message.
         '''
         dest = self.get_destAddress(dest_user) # or request the address from the server
-        print(f'Destination: {dest}')
 
         if dest_user not in self.shared_keys:
             private_key, public_key = self.generateKeyPair()
@@ -255,14 +261,17 @@ class Client:
                 "source_port": self.client_listener_port  # Include the listening port
             }
         else:
-            # We already know the destination user, so we can send the message directly
+            # We already know the destination user, so we can send the message directly while encrypting the msg
+            nonce, ciphertext_msg = self.encrypt_message(self.shared_keys[dest_user], msg)
+
             packet = {
                 "type": "MESSAGE",
                 "source_ip": 0, # Need to figure out how to get the local ip address
                 "source_port": 0, # Need to figure out how to get the local port
                 "source_user": self.username,
                 "to": dest_user,
-                "message": msg
+                "nonce": binascii.hexlify(nonce).decode('utf-8'),
+                "message": binascii.hexlify(ciphertext_msg).decode('utf-8')
             }
 
         try:
@@ -270,8 +279,6 @@ class Client:
         except Exception as e:
             print(f"Error sending message to {dest_user}. They may not be signed in: {e}")
 
-        
-    
     def handleKeyExchange(self, data, conn):
         '''
             For now we just want to respond to the key exchange request by sending back our public key.
@@ -293,6 +300,20 @@ class Client:
         }
         print(f'Finsihed handleKeyExchange')
         return packet
+
+    def handleRecievedMessage(self, data):
+        if self.shared_keys.get(data.get("source_user")):
+            nonce = binascii.unhexlify(data.get("nonce"))
+            ciphertext = binascii.unhexlify(data.get("message"))
+            try:
+                plaintext = self.decrypt_message(self.shared_keys[data.get("source_user")], nonce, ciphertext)
+                return plaintext
+            except Exception as e:
+                print(f'[-] Error decrypting message: {e}')
+                return None
+        else:
+            print(f'[-] No shared key found for {data.get("source_user")}. Cannot decrypt message.')
+            return None
 
     def get_destAddress(self, dest_user):
         '''
@@ -317,19 +338,16 @@ class Client:
         '''
             Generate a public/private key pair using ECDSA
         '''
-        priv = ec.generate_private_key(ec.SECP256R1(), default_backend())
-        print(f'[DEBUG] Generated Key Pair')
-        pub = priv.public_key()
-        return priv, pub
+        self.priv = ec.generate_private_key(ec.SECP256R1(), default_backend())
+        pub = self.priv.public_key()
+        return self.priv, pub
     
     def generateSharedSessionKey(self, private_key, peer_public_key_bytes, peer_username):
         '''''
             Generate a shared secret key using ECDH
         '''
-        print(f'[DEBUG] Generating Shared Session Key for {peer_username}')
         peer_pub_key = serialization.load_pem_public_key(peer_public_key_bytes, backend=default_backend())
         shared_key = private_key.exchange(ec.ECDH(), peer_pub_key)
-        print(f'HERE43')
 
         # Derive a symmetric key from the shared secret using HKDF
         session_key = HKDF(
@@ -339,10 +357,19 @@ class Client:
             info=b'handshake data',
             backend=default_backend()
         ).derive(shared_key)
-        print(f'[DEBUG] Generated Shared Session Key: {binascii.hexlify(session_key)}')
-
-        self.shared_keys[peer_username] = session_key  # Store the shared key for the peer
+        # print(f'[DEBUG] Generated Shared Session Key: {binascii.hexlify(session_key)}')
         return session_key
+    
+    def encrypt_message(shared_key, plaintext):
+        aesgcm = AESGCM(shared_key)
+        nonce = os.urandom(12)
+        ciphertext = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), None)
+        return nonce, ciphertext
+
+    def decrypt_message(shared_key, nonce, ciphertext):
+        aesgcm = AESGCM(shared_key)
+        plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+        return plaintext.decode('utf-8')
 
 if __name__ == '__main__':
     # Load server configuration from config.json
