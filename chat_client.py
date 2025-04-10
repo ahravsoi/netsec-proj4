@@ -179,18 +179,27 @@ class Client:
                 print("[*] Peer closed the connection.")
                 return
             data = json.loads(data.decode('utf-8'))
-            
+            print('Here1')
+            print(f'Data Type: {data.get("type")}')
             if data.get('type') == 'MESSAGE':
                 print(f'<From {data.get("source_ip")}:{data.get("source_port")}:{data.get("source_user")}> {data.get("message")} ')
+                print('Here2')
             elif data.get('type') == 'KEY_EXCHANGE':
                 rsp = self.handleKeyExchange(data)
+                print('Here3')
             elif data.get('type') == 'KEY_EXCHANGE_RESPONSE':
-                rsp = self.generateSharedSessionKey(self.ephemeral_keys[data.get("source_user")], data.get("public_key").encode('utf-8'))
+                session_key = self.generateSharedSessionKey(self.ephemeral_keys[data.get("source_user")], data.get("public_key").encode('utf-8'))
+                print('Here4')
             else:
                 print(f'[*] Unknown message type: {data.get("type")}')
 
-            if rsp is not None:
-                self.message_peer(data.get("source_user"), rsp)  # Send a response back to the peer
+            print('Here5')
+            #if rsp is not None:
+            print(f' Source User: {data.get("source_user")}')
+            print(f' Response to send back: {rsp}')
+            self.message_peer(data.get("source_user"), rsp)  # Send a response back to the peer
+            print('Here6')
+            print('Here7')
                 
         except Exception as e:
             print(f'[*] Error receiving message from peer: {e}')
@@ -276,7 +285,7 @@ class Client:
             "source_user": self.username,
             "public_key": public_key_bytes.decode('utf-8')
         }
-
+        print(f'Finsihed handleKeyExchange')
         return packet
 
     def get_destAddress(self, dest_user):
