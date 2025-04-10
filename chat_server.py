@@ -2,6 +2,9 @@ import socket
 import json
 import argparse
 import threading
+import argon2
+import os
+import binascii
 
 ##TODO -  When someone logs out we should broadcast to all clients that they have logged out.
 class Server:
@@ -14,7 +17,8 @@ class Server:
         self.server_socket.listen(5) # Can handle 5 clients at a time
         print(f'[*] Server started on {self.ip}:{self.port}')
         
-        self.credentials = {"Ahrav": "test123", "Alex": "a4password", "Jack": "$orange43"} 
+        self.credentials = {"Ahrav": "test123", "Alex": "a4password", "Jack": "$orange43"}
+        self.keys = {} # Map of {username: shared_key}
         self.knownClients = {} # Map of {username: (connection, address, receiver_port)}
         self.clients_lock = threading.Lock()
 
@@ -77,7 +81,8 @@ class Server:
         with self.clients_lock:
             if self.credentials[data['username']] == data['password']:
                 self.knownClients[data['username']] = (conn, address, data['reciever_port'])
-                # Generate Shared key from password
+                self.keys[data['username']] = self.deriveSharedKey(data['password'], os.urandom(16), 32) # Generate Shared key from password
+                #print(f'[DEBUG] Shared Key for {data["username"]}: {binascii.hexlify(self.keys[data["username"]])}')
             else:
                 packet = {
                     "type": "LOGIN_FAIL",
@@ -141,6 +146,40 @@ class Server:
                 }
                 return packet
 
+    def deriveSharedKey(self, password, salt, keylen):
+        '''
+            Derives a shared key from the password using Argon2 hashing algorithm.
+            This is used to encrypt the messages between the clients.
+
+            https://cryptobook.nakov.com/mac-and-key-derivation/argon2
+            Look at these docs for how to do the verification on the client side.
+
+        '''
+        tmp = password.encode('utf-8')
+        password_hash = argon2.hash_password_raw(
+            time_cost=4,       # 4 iterations
+            memory_cost=10240, # 10 MB
+            parallelism=2,     # 2 threads
+            hash_len=32,
+            password=tmp, 
+            salt=salt, 
+            type=argon2.low_level.Type.ID
+        )
+        print("[DEBUG] Argon2 raw hash:", binascii.hexlify(password_hash))
+
+        # This part is used for password storing and verification
+        # it holds algo parameters salt and derived key
+        argon2Hasher = argon2.PasswordHasher(
+            time_cost=4,
+            memory_cost=10240,
+            parallelism=2,
+            hash_len=32,
+            salt_len=16
+        )
+        password_hash = argon2Hasher.hash(password)
+        print("[DEBUG] Argon2 hash (random salt):", password_hash)
+
+    
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-sp', type=int, help='Port number to listen on') # Use Port 50005
