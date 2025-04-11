@@ -197,13 +197,15 @@ class Client:
                 print(f'<From {data.get("source_ip")}:{data.get("source_port")}:{data.get("source_user")}> {recieved_message}')
                 print(f'{self.username}@{self.current_ip}: Enter Command>>\n', flush=True)
             elif data.get('type') == 'KEY_EXCHANGE':
-                rsp = self.handleKeyExchange(data, conn)
+                rsp = self.handleKeyExchange(data, conn, data.get("public_key"), data.get("source_user"))
                 # At this point we need to generate the session key too because we have the public key of the peer and then generating our own in
-                # the method above
+                # the method above 
+
+
+
                 self.message_peer(data.get("source_user"), rsp)
             elif data.get('type') == 'KEY_EXCHANGE_RESPONSE':
                 session_key = self.generateSharedSessionKey(self.priv, data.get("public_key").encode('utf-8'), data.get("source_user"))
-                self.shared_keys[data.get("source_user")] = session_key # Store the session key to decrypt messages from this client
                 print(f'[+] Shared key established with {data.get("source_user")}: {binascii.hexlify(session_key)}')
                 # Send the actual message now which is tricky because the logic is in the else clause of the send method
 
@@ -285,7 +287,7 @@ class Client:
         except Exception as e:
             print(f"Error sending message to {dest_user}. They may not be signed in: {e}")
 
-    def handleKeyExchange(self, data, conn):
+    def handleKeyExchange(self, data, conn, sender_pub_key, sender_username):
         '''
             For now we just want to respond to the key exchange request by sending back our public key.
             Add the sender to known peers
@@ -296,6 +298,8 @@ class Client:
         public_key_bytes = public_key.public_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo)
+        
+        self.generateSharedSessionKey(self.priv, sender_pub_key.encode('utf-8'), data["source_user"])
 
         # Store the ephemeral key and shared key
         self.ephemeral_keys[data["source_user"]] = data["public_key"]
@@ -363,7 +367,8 @@ class Client:
             info=b'handshake data',
             backend=default_backend()
         ).derive(shared_key)
-        # print(f'[DEBUG] Generated Shared Session Key: {binascii.hexlify(session_key)}')
+        print(f'[DEBUG] Generated Shared Session Key: {binascii.hexlify(session_key)}')
+        self.shared_keys[peer_username] = session_key
         return session_key
     
     def encrypt_message(shared_key, plaintext):
