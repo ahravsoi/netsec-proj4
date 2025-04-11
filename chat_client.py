@@ -78,7 +78,7 @@ class Client:
             #print(f'Known Peers: {self.known_peers}')
             pass
         peer_ip, peer_port = self.known_peers.get(dest_user)
-        print(f'[DEBUG] Peer IP: {peer_ip}, Peer Port: {peer_port}')
+        # print(f'[DEBUG] Peer IP: {peer_ip}, Peer Port: {peer_port}')
         if peer_ip and peer_port:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as peer_socket:
                 peer_socket.connect((peer_ip, peer_port))
@@ -351,7 +351,6 @@ class Client:
                 "requested_user": dest_user
             }
             self.message_server(packet)
-            print(f'Getting address: {packet}')
             while dest_user not in self.known_peers: # Wait for the local peers table to get updated
                 pass
             return self.known_peers[dest_user]
@@ -379,7 +378,7 @@ class Client:
             info=b'handshake data',
             backend=default_backend()
         ).derive(shared_key)
-        print(f'[DEBUG] Generated Shared Session Key with {peer_username}: {binascii.hexlify(session_key)}')
+        print(f'[*] Generated Shared Session Key with {peer_username}: {binascii.hexlify(session_key)}')
         self.shared_keys[peer_username] = session_key
         if peer_username in self.key_exchange_events:
             self.key_exchange_events[peer_username].set()
