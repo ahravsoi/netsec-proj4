@@ -24,7 +24,10 @@ class Client:
         self.connected = False
         self.login_status = False
         self.known_peers = {}  # Map of {username: (ip, listner_port)}
+
         self.server_lock = threading.Lock()
+        self.key_exchange_events = {}  # {username: threading.Event()}
+
 
         # Get the current IP address of the client
         self.current_ip = socket.gethostbyname(socket.gethostname())
@@ -200,13 +203,9 @@ class Client:
                 rsp = self.handleKeyExchange(data, conn, data.get("public_key"), data.get("source_user"))
                 # At this point we need to generate the session key too because we have the public key of the peer and then generating our own in
                 # the method above 
-
-
-
                 self.message_peer(data.get("source_user"), rsp)
             elif data.get('type') == 'KEY_EXCHANGE_RESPONSE':
                 session_key = self.generateSharedSessionKey(self.priv, data.get("public_key").encode('utf-8'), data.get("source_user"))
-                print(f'[+] Shared key established with {data.get("source_user")}: {binascii.hexlify(session_key)}')
                 # Send the actual message now which is tricky because the logic is in the else clause of the send method
 
 
@@ -267,25 +266,39 @@ class Client:
                 "source_ip": self.server_socket.getsockname()[0],  # Get the local IP address
                 "source_port": self.client_listener_port  # Include the listening port
             }
-        else:
+
+            self.key_exchange_events[dest_user] = threading.Event()  # Create an event for the key exchange
+            
+            try:
+                self.message_peer(dest_user, packet)  # Send the key exchange packet
+            except Exception as e:
+                print(f"Error sending key exchange message to {dest_user}: {e}")
+
+            self.key_exchange_events[dest_user].wait(5)  # Set time out and wait for key exchange to complete
+            if dest_user not in self.shared_keys:
+                print(f'[-] Key exchange timed out with {dest_user}.')
+                return
+
         
-            # Now that shared key is derived, we can encrypt the message
-            nonce, ciphertext_msg = self.encrypt_message(self.shared_keys[dest_user], msg)
+    
+        
+        # Now that shared key is derived, we can encrypt the message
+        nonce, ciphertext_msg = self.encrypt_message(self.shared_keys[dest_user], msg)
 
-            packet = {
-                "type": "MESSAGE",
-                "source_ip": 0, # Need to figure out how to get the local ip address
-                "source_port": 0, # Need to figure out how to get the local port
-                "source_user": self.username,
-                "to": dest_user,
-                "nonce": binascii.hexlify(nonce).decode('utf-8'),
-                "message": binascii.hexlify(ciphertext_msg).decode('utf-8')
-            }
-
+        packet = {
+            "type": "MESSAGE",
+            "source_ip": self.current_ip, # Need to figure out how to get the local ip address
+            "source_port": self.client_listener_port, # Need to figure out how to get the local port
+            "source_user": self.username,
+            "to": dest_user,
+            "nonce": binascii.hexlify(nonce).decode('utf-8'),
+            "message": binascii.hexlify(ciphertext_msg).decode('utf-8')
+        }
         try:
-            self.message_peer(dest_user, packet)  # Send the message to the destination user
+            self.message_peer(dest_user, packet)  # Send the key exchange packet
         except Exception as e:
-            print(f"Error sending message to {dest_user}. They may not be signed in: {e}")
+            print(f"Error sending message packet to {dest_user}: {e}")
+
 
     def handleKeyExchange(self, data, conn, sender_pub_key, sender_username):
         '''
@@ -308,7 +321,6 @@ class Client:
             "source_user": self.username,
             "public_key": public_key_bytes.decode('utf-8')
         }
-        print(f'Finsihed handleKeyExchange')
         return packet
 
     def handleRecievedMessage(self, data):
@@ -367,17 +379,20 @@ class Client:
             info=b'handshake data',
             backend=default_backend()
         ).derive(shared_key)
-        print(f'[DEBUG] Generated Shared Session Key: {binascii.hexlify(session_key)}')
+        print(f'[DEBUG] Generated Shared Session Key with {peer_username}: {binascii.hexlify(session_key)}')
         self.shared_keys[peer_username] = session_key
+        if peer_username in self.key_exchange_events:
+            self.key_exchange_events[peer_username].set()
+
         return session_key
     
-    def encrypt_message(shared_key, plaintext):
+    def encrypt_message(self, shared_key, plaintext):
         aesgcm = AESGCM(shared_key)
         nonce = os.urandom(12)
         ciphertext = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), None)
         return nonce, ciphertext
 
-    def decrypt_message(shared_key, nonce, ciphertext):
+    def decrypt_message(self, shared_key, nonce, ciphertext):
         aesgcm = AESGCM(shared_key)
         plaintext = aesgcm.decrypt(nonce, ciphertext, None)
         return plaintext.decode('utf-8')
