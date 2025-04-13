@@ -1,2 +1,2 @@
-argon2-cffi
 cryptography
+argon2-cffi
