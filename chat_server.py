@@ -230,8 +230,8 @@ class Server:
     def _encrypt_data(self, data):
         """Encrypt data before saving to file"""
         # Generate a key derivation from a server secret
-        server_secret = os.environ.get('SERVER_SECRET', 'change_this_to_a_secure_random_value')
-        salt = b'secure_messenger_salt'
+        server_secret = 'X7vPR8bHJQ8IpWBGPPkrTXOtvjnyxA6W2K/82GFsHCY='
+        salt = b'jKuw7xLp0qF29X3B'  # Custom salt value instead of default
         kdf = HKDF(
             algorithm=hashes.SHA256(),
             length=32,
@@ -256,9 +256,9 @@ class Server:
         if not encrypted_data:
             return {}
             
-        # Generate the same key
-        server_secret = os.environ.get('SERVER_SECRET', 'change_this_to_a_secure_random_value')
-        salt = b'secure_messenger_salt'
+        # Use hardcoded secret (for educational purposes only)
+        server_secret = "X7vPR8bHJQ8IpWBGPPkrTXOtvjnyxA6W2K/82GFsHCY="
+        salt = b'jKuw7xLp0qF29X3B'  # Custom salt value instead of default
         kdf = HKDF(
             algorithm=hashes.SHA256(),
             length=32,
